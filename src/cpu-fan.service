@@ -1,0 +1,11 @@
+[Unit]
+After=basic.target
+Description=CPU fan control
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/cpu-fan -q load
+
+[Install]
+WantedBy=basic.target

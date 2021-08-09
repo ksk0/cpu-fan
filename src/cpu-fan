@@ -1,0 +1,836 @@
+#!/usr/bin/zsh
+
+CFAN_CONFIG_FILE=/etc/cpu-fan.conf
+
+#################################
+# Init commands
+#
+init_cfan(){
+	red=$'\e[31m'
+	green=$'\e[32m'
+	yellow=$'\e[33m'
+	no_color=$'\e[0m'
+}
+
+
+#################################
+# Exec commands
+#
+exec_command(){
+	local cmd=$1; shift
+
+	case $cmd in
+		help)    exec_help    $@;;
+		load)    exec_load    $@;;
+		status)  exec_status  $@;;
+		setup)   exec_setup   $@;;
+		enable)  exec_enable  $@;;
+		disable) exec_disable $@;;
+	esac
+}
+
+exec_help(){
+
+	cat <<- EOF |
+
+		synopsis:
+		   cpu-fan {command}
+
+		commands:
+		   status   - show configuration, fan and temperature status
+
+		   setup    - setup temperature/fan speed profile
+		   enable   - enable fun control activation at boot
+		   disable  - disable fun control activation at boot
+
+		decription:
+		   This script is intended to configure fan control on family
+		   of chips controled by "nct6775" kernel module. It is inten-
+		   ded for configuration only for 'Smart Fan IV' mode.
+
+		   You  have  to  install  "lm-sensors"  package,  run script
+		   "sensors-detect" to detect chip used to controll fan, load
+		   needed kernel modules  (add them  to list of moduels to be
+		   loaded at boot), and posibly reboot your PC before running
+		   this script.
+
+		   If bios does not  use nct6775 kernel  module,  or if  chip
+		   does not support 'Smart Fan IV' mode, this script will  be
+		   of no use for you :(
+
+		[32mMore info:[0m  https://github.com/ksk0/cpu-fan
+
+	EOF
+	sed -e 's/^/   /'
+
+}
+
+exec_setup(){
+
+	check_for_lm_sensors
+	check_for_chipset
+	check_for_pmw_points
+
+	check_if_root
+
+	load_config
+
+	find_bios_fan && find_bios_pulses
+
+	define_speed_profile
+
+	save_config
+	load_cfan_control
+	bring_at_boot || echo
+}
+
+exec_load(){
+
+	check_for_config
+	check_if_root
+
+	find_bios_hwmon
+	load_cfan_control
+
+	[[ $SCRIPT_QUIET -eq 0 ]] && exec_status
+
+	return 0
+}
+
+exec_status(){
+
+	check_for_config
+
+
+	local pwm_modes=(
+		'Fan control disabled (fans set to maximum speed)'
+		'Manual mode, write to pwm[0-5] any value 0-255'
+		'Thermal Cruise'
+		'Fan Speed Cruise'
+		'Smart Fan III (NCT6775F only)'
+		'Smart Fan IV'
+	)
+
+	local cfan_status=$(systemctl is-active cpu-fan.service)
+	local cfan_enabled=$(systemctl is-enabled cpu-fan.service)
+
+	local pwm_mode
+
+	find_bios_hwmon
+
+	pwm_mode=$(cat $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_enable)
+	pwm_mode=$((++pwm_mode))
+
+	local temps=("${(@f)$(
+		sensors  | awk '
+			/^Package id/{
+				temp = substr ($4,2,(length($4) - 3))
+				temp_max  = substr ($7,2,(length($7) - 4))
+				temp_crit = substr ($10,2,(length($10) - 4))
+
+				degree = substr ($4,(length($4) - 2), 3)
+
+				printf "%d\n", (temp + 0.5)
+				printf "%d\n", (temp_max + 0.5)
+				printf "%d\n", (temp_crit + 0.5)
+			}
+		'
+	)}")
+
+	echo
+	echo "${green}   cpu-fan:${no_color}   $cfan_status ($cfan_enabled)"
+	echo "${green}   PWM mode:${no_color}  ${pwm_modes[$pwm_mode]}"
+
+	echo
+	echo "${green}   CPU temp:${no_color}   ${(l:3:)temps[1]} °C"
+	echo "${green}   High temp:${no_color}  ${(l:3:)temps[2]} °C"
+	echo "${green}   Crit temp:${no_color}  ${(l:3:)temps[3]} °C"
+
+	echo
+	echo -n "${green}   Fan speed:${no_color} "
+	sensors  |
+		awk -v no=$CFAN_BIOS_FAN '
+			BEGIN {grep = "^fan" no ":"}
+			$1 ~ grep {printf "%4d rpm\n", $2}
+		'
+
+	echo 
+	echo "   No.       Temp       max rpm [%]"
+	echo "   --------------------------------"
+
+	local temp
+	local pwm_val
+
+	for i in {1..5}; do
+		temp=$(cat  $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_auto_point${i}_temp)
+		pwm_val=$(cat  $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_auto_point${i}_pwm)
+
+		printf "   %2d.    %5s °C  %5s %% rpm\n" $i $((temp / 1000)) $(((pwm_val * 100) / 255))
+	done
+
+	echo
+}
+
+exec_enable(){
+
+	check_for_config
+	check_if_root
+
+	echo
+	echo -n "   Enabling CPU-FAN service .............................. "
+
+	systemctl enable cpu-fan.service >/dev/null 2>&1
+
+	if [[ $? -ne 0 ]]; then
+		message="FAILED"
+		echo -e "\e[${#message}D${red} ${message}${no_color}"
+
+	else
+		systemctl start cpu-fan.service >/dev/null 2>&1
+
+		if [[ $? -ne 0 ]]; then
+			message="FAILED"
+			echo -e "\e[${#message}D${red} ${message}${no_color}"
+		else
+			message="SUCCESS"
+			echo -e "\e[${#message}D${green} ${message}${no_color}"
+		fi
+	fi
+
+	echo
+}
+
+exec_disable(){
+
+	check_for_config
+	check_if_root
+
+	echo
+	echo -n "   Disabling CFAN service ................................ "
+
+	systemctl disable cpu-fan.service >/dev/null 2>&1
+
+	if [[ $? -ne 0 ]]; then
+		message="FAILED"
+		echo -e "\e[${#message}D${red} ${message}${no_color}"
+
+	else
+		message="SUCCESS"
+		echo -e "\e[${#message}D${green} ${message}${no_color}"
+	fi
+
+	echo
+}
+
+
+
+#################################
+# check functions
+#
+check_if_root(){
+
+	[[ $EUID -eq 0 ]] && return
+
+	echo -e "\e[31m"
+	echo "   You have to be root to run this command! Use sudo."
+	echo -e "\e[0m"
+
+	exit 1
+}
+
+check_for_lm_sensors(){
+
+	hash sensors 2>/dev/null && return
+
+	cat <<-EOF |
+		${green}
+		It seems that  "lm-sensors" have not been  installed. Install
+		"lm-sensors" and run "sensors-detect" to detect BIOS fan con-
+		troller and configure kernel modules.
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+check_for_chipset(){
+	find_bios_hwmon && return
+
+	cat <<-EOF |
+		${green}
+		This script  is  made for  controling the fan on motherboards
+		which use ${no_color}nct6775${green} kernel module, which in turn covers multiple
+		chips:
+		${no_color}
+		   Nuvoton NCT6102D NCT6104D NCT6106D
+		   Nuvoton NCT5572D NCT6771F NCT6772F NCT6775F W83677HG-I
+		   Nuvoton NCT5573D NCT5577D NCT6776D NCT6776F
+		   Nuvoton NCT5532D NCT6779D
+		   Nuvoton NCT6791D
+		   Nuvoton NCT6792D
+		   Nuvoton NCT6793D
+		   Nuvoton NCT6795D
+		   Nuvoton NCT6795D
+		${green}
+		such kernel module has not been identified.  This is possible
+		if  you  haven't run "sensors-detect" script (of "lm-sensors"
+		package),  or if your fan controll is not based on above men-
+		tioned chips.
+
+		Run "sensors-detect" to detect motherboard chip. When promp-
+		ted, add needed kernel modules  to load at startup. If needed
+		restart your PC.
+
+		If this message is appearing even  after you have run  script
+		"sensors-detect", added kernel modules and restarted your PC,
+		than your motherboard probably doesn't use any of above chips
+		and certainly this script can't help you :(
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+check_for_pmw_points(){
+
+	local cwd=$(pwd)
+	cd $CFAN_BIOS_HWMON/
+
+	local points=($(
+		ls -1 | grep "^pwm${CFAN_BIOS_FAN:-.}_auto_point._temp$"
+	))
+
+	cd $cwd
+
+	CFAN_BIOS_POINTS=$#points
+	[[ $CFAN_BIOS_POINTS -ne 0 ]] && return
+	
+	cat <<-EOF |
+		${green}
+		Kernel module ${no_color}nct6775${green} has been identified, but no support  for
+		"Smart Fan IV" mode for fan speed control is found. Unfortuna-
+		tely this script can't help you,  since it is ment to configu-
+		re exactely this mode.
+
+		Exiting ...
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+check_for_config(){
+	[[ ${+CFAN_BIOS_FAN} -eq 0 ]] && load_config
+	[[ ${+CFAN_BIOS_FAN} -eq 1 ]] && return
+
+	cat <<-EOF |
+		${green}
+		CPU fan has not been identified. Run ${yellow}cpu-fan setup${green} to complete
+		setup/configuration.
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+check_and_load_config(){
+	[[ ${+CFAN_BIOS_FAN} -eq 0 ]] && load_config
+	[[ ${+CFAN_BIOS_FAN} -eq 1 ]] && return
+
+	cat <<-EOF |
+		${green}
+		There is no valid configuration file.
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+
+#################################
+# worker functions
+#
+load_config(){
+	[[ -f $CFAN_CONFIG_FILE ]] && source $CFAN_CONFIG_FILE
+}
+
+save_config(){
+	while true; do
+		echo -n "   Do you wan to save config [Y/n]: "
+		read yesno
+		[[ ${(L)yesno:-y} = y ]] || [[ ${(L)yesno} = n ]] && break
+	done
+
+	[[ ${(L)yesno} = n  ]] && echo && exit 1
+
+	cat <<-EOF > $CFAN_CONFIG_FILE
+		CFAN_BIOS_PULSES=$CFAN_BIOS_PULSES
+		CFAN_BIOS_FAN=$CFAN_BIOS_FAN
+		CFAN_BIOS_TEMPS=($CFAN_BIOS_TEMPS)
+		CFAN_BIOS_SPEEDS=($CFAN_BIOS_SPEEDS)
+	EOF
+
+	return 0
+}
+
+bring_at_boot(){
+	local cfan_enabled=$(systemctl is-enabled cpu-fan.service)
+
+	[[ $cfan_enabled = enabled ]] && return 1
+
+	while true; do
+		echo -n "   Do you wan to load CFAN at boot [Y/n]: "
+		read yesno
+
+		[[ ${(L)yesno:-y} = y ]] || [[ ${(L)yesno} = n ]] && break
+	done
+
+	[[ ${(L)yesno} = n  ]] && return 1
+
+	exec_enable
+
+	return 0
+}
+
+find_bios_hwmon(){
+	local hwdir=/sys/class/hwmon
+	local hwds=($(ls -1 $hwdir))
+	local hwd uevent driver
+
+	for hwd in $hwds; do
+		uevent=$hwdir/$hwd/device/uevent
+		[[ ! -f $uevent ]] && continue
+
+		driver=$(cat $uevent | grep '^DRIVER' | sed -e 's/^DRIVER=//')
+
+		if [[ $driver = nct6775 ]]; then
+
+			CFAN_BIOS_HWMON=$hwdir/$hwd
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+find_bios_fan(){
+
+	if [[ ${CFAN_BIOS_FAN:+x} = x ]]; then
+		cat <<-EOF |
+			${green}
+			According to configuration file, fan has been already
+			identified. Do you want to start process of fan disco-
+			very again?
+			${no_color}
+		EOF
+		sed -e 's/^/   /'
+
+		while true; do
+			echo -n "   Dou you want to search for CPU fan [y/N]: "
+			read yesno
+
+			[[ ${(L)yesno:-n} = n ]] || [[ ${(L)yesno} = y ]] && break
+		done
+
+		[[ ${(L)yesno:-n} = n ]] && return 1
+	fi
+
+	local cwd=$(pwd)
+
+
+	####################################################
+	# Find available fan controls
+	#
+	cd $CFAN_BIOS_HWMON
+	local pwms=($(ls -1 | grep '^pwm.$'))
+	cd $cwd
+
+	cat <<-EOF |
+		${green}
+
+		It is not known which BIOS controller controlls which fan
+		connected to the mother board. To find correct controler,
+		we are going to search for CPU fan. Each fan will be sped
+		up to maximum.
+
+		When you see/hear CPU fan spinning, accept selection.
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	local yesno
+	echo -n "   Press <ENTER> to start scann: "
+	read yesno
+	echo
+
+	local pwm mode speed pulses fan_no
+	local message
+
+
+	####################################################
+	# Try to spin each fan via fan control to its max
+	# speed. If fan is detected (by sound or visualy)
+	# user should confirm that fan is found.
+	#
+	for pwm in $pwms; do
+		fan_no=${pwm#pwm}
+
+		echo -n "   Spinning fan no. $fan_no .................................... "
+
+		mode=$(cat $CFAN_BIOS_HWMON/${pwm}_enable)
+		speed=$(cat $CFAN_BIOS_HWMON/${pwm})
+
+		echo "1" > $CFAN_BIOS_HWMON/${pwm}_enable
+		echo 255 > $CFAN_BIOS_HWMON/$pwm
+		sleep 7
+
+		fan_speed=$(sensors | grep "^fan${fan_no}" | awk '{print $2}')
+
+		echo $mode  > $CFAN_BIOS_HWMON/${pwm}_enable
+		echo $speed > $CFAN_BIOS_HWMON/$pwm
+
+		if [[ $fan_speed -eq 0 ]]; then
+			message="NO FAN PRESENT"
+			echo -e "\e[${#message}D${red} ${message}${no_color}"
+
+			fan_no=""
+			continue
+		else
+			message="SUCCESS"
+			echo -e "\e[${#message}D${green} ${message}${no_color}"
+		fi
+
+		echo
+		while true; do
+			echo -n "   Is this CPU fan [y/N]: "
+			read yesno
+
+			[[ ${(L)yesno:-n} = n ]] || [[ ${(L)yesno} = y ]] && break
+		done
+		echo
+
+		[[ ${(L)yesno} = y ]] && break
+
+		fan_no=""
+	done
+
+	if [[ -n $fan_no ]]; then
+		# echo "FAN NO: $fan_no"
+		CFAN_BIOS_FAN=$fan_no
+		return 0
+	fi
+
+	cat <<-EOF |
+		${green}
+
+		CPU fan has not been identified. Eather there is no CPU
+		fan, or you have missidentified it. If later, run setup
+		again.
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	exit 1
+}
+
+find_bios_pulses(){
+
+	####################################################
+	# We have to find proper number of pulses per fun
+	# revolution. For that purpose we will change the
+	# settings (from 1 to 4) and check reported fan 
+	# speed. User has to select settings which coresponds
+	# best to factory declared fan's maximum speed.
+	#
+	# This can take a while.
+	#
+	cat <<-EOF |
+		${green}
+		There is BIOS  setting  (number of pulses per  revolution)
+		that affects reported  fan speed.  We will run  fan  speed
+		test again. After test is done you will be presented diff-
+		erent speeds. Chose one which is closest to factory decla-
+		red maximum fan speed (rpm).
+		${no_color}
+	EOF
+	sed -e 's/^/   /'
+
+	echo -n "   Press <ENTER> to start scann: "
+	read yesno
+	echo
+
+	local mode speed pulses
+	local fan_speed fan_speeds
+	local message
+
+	echo -n "   Spinning fan no. $CFAN_BIOS_FAN (again) ............................ "
+
+	mode=$(cat $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_enable)
+	speed=$(cat $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN})
+	pulses=$(cat $CFAN_BIOS_HWMON/fan${CFAN_BIOS_FAN}_pulses)
+
+	echo 1   > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_enable
+	echo 255 > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}
+	echo 2   > $CFAN_BIOS_HWMON/fan${CFAN_BIOS_FAN}_pulses
+	sleep 7
+
+	message="DONE"
+	echo -e "\e[${#message}D${green} ${message}${no_color}"
+
+	# echo -en "\e[${#message}D"
+	# echo ${green} ${message}${no_color}
+
+	echo -n "   Checking for pulse variation .......................... "
+
+	fan_speeds=($(
+		for i in {1..4}; do
+			echo -n $i >&2
+			echo "$i" > $CFAN_BIOS_HWMON/fan${CFAN_BIOS_FAN}_pulses
+
+			sleep 3
+			sensors | grep "^fan${CFAN_BIOS_FAN}" | awk '{print $2}'
+			echo -en "\e[1D" >&2
+		done
+	))
+
+	echo $mode   > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_enable
+	echo $speed  > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}
+	echo $pulses > $CFAN_BIOS_HWMON/fan${CFAN_BIOS_FAN}_pulses
+
+	message="DONE"
+	echo -e "\e[${#message}D${green} ${message}${no_color}"
+
+	# echo -en "\e[${#message}D"
+	# echo ${green} ${message}${no_color}
+
+
+	####################################################
+	# We have collected fan speed. User has to select
+	# proper one.
+	#
+	echo
+	echo ${green}
+	echo "   Scanned speeds:"
+	echo "   ---------------------------------"
+
+	for i in {1..4}; do
+		echo "   $i. ${fan_speeds[$i]} rpm"
+	done
+	echo ${no_color}
+
+	while true; do
+		echo -n "   Chose best matching max speed: "
+		read yesno
+		[[ $yesno =~ '^[1-4]$' ]] && break
+	done
+	echo
+
+	CFAN_BIOS_PULSES=$yesno
+}
+
+define_speed_profile(){
+
+	check_for_pmw_points
+
+	cat <<-EOF |
+		${green}
+		Speed of the fan  is  defined  by control points ($CFAN_BIOS_POINTS of them).
+		Each control  point is defined  by temperature and fan speed.
+		Curve is constructed (with straight segments) between  these
+		points. For each temperture, matched fan spped is calculated.
+
+		Graph of temperture vs fan speed looks like below:
+		${yellow}
+		        rpm
+
+		        / \\
+		         |                            P5
+		   rpm-5 |                            o
+		         |                           /
+		         |                          /
+		         |                     P4  /      
+		   rpm-4 |                        o
+		         |                      /
+		         |                P3  /
+		   rpm-3 |                  o
+		         |                /
+		         |         P2   /
+		   rpm-2 |            o
+		         |          /
+		         |  P1   /
+		   rpm-1 |    o
+		         |
+		         +----------------------------------> Temp
+		              T1      T2    T3   T4   T5
+		${green}
+
+		You will be asked to enter temperature and fan speed for each
+		control point. Temperture is given in C, and fan speed in per-
+		centage of max speed (0 - 100).
+
+	EOF
+	sed -e 's/^/   /'
+
+	echo
+	echo
+
+	local value last_temp last_rpm
+	local temps=()
+	local speeds=()
+
+	while true; do
+		for i in {1..$CFAN_BIOS_POINTS}; do
+			last_temp=${temps[-1]:-0}
+			last_rpm=${speeds[-1]:-0}
+
+			while true; do
+				echo -en "\e[1G\e[1A\e[2K"
+				echo -n "${green}      Enter temperature ($i) [C]: ${no_color}"
+				read value
+
+				[[ $value =~ '^[0-9]+$' ]] || continue
+				[[ $value -le $last_temp ]] && continue
+
+				temps+=($value)
+
+				while true; do
+					echo -en "\e[1G\e[1A\e[2K"
+					echo -n "${green}      Enter temperature ($i) [C]:"
+					echo -n "${no_color}${(l:3:: :)temps[-1]} °C"
+					echo -n "${green}  and speed [%]:${no_color} "
+					read value
+
+					[[ $value =~ '^[0-9]+$' ]] || continue
+					[[ $value -gt 100 ]] && continue
+					[[ $value -lt $last_rpm ]] && continue
+					break
+				done
+
+				speeds+=($value)
+				break
+			done
+
+			echo -en "\e[1G\e[1A\e[2K"
+			echo -n "${green}      Enter temperature ($i) [C]:"
+			echo -n "${no_color}${(l:3:: :)temps[-1]} °C"
+			echo -n "${green}  and speed [%]: "
+			echo -n "${no_color}${(l:3:: :)speeds[-1]} %"
+			echo
+			echo
+		done
+
+		while true; do
+			echo -n "   Are you satisfied with entered data [y/n]: "
+			read value
+
+			[[ ${(L)value} = n ]] || [[ ${(L)value} = y ]] && break
+		done
+
+		[[ ${(L)value} = y ]] && break
+		temps=()
+		speeds=()
+		echo
+		echo
+	done
+
+	CFAN_BIOS_TEMPS=($temps)
+	CFAN_BIOS_SPEEDS=()
+
+	for value in $speeds; do
+		CFAN_BIOS_SPEEDS+=($((255 * $value / 100)))
+	done
+
+	# echo 
+	# echo ${(qq)CFAN_BIOS_TEMPS}
+	# echo ${(qq)CFAN_BIOS_SPEEDS}
+}
+
+load_cfan_control(){
+
+	echo $CFAN_BIOS_PULSES > "$CFAN_BIOS_HWMON/fan${CFAN_BIOS_FAN}_pulses"
+	echo 5 > "$CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_enable"
+
+	for i in {1..$#CFAN_BIOS_TEMPS}; do
+		echo "${CFAN_BIOS_TEMPS[i]}000"  > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_auto_point${i}_temp
+		echo "${CFAN_BIOS_SPEEDS[i]}" > $CFAN_BIOS_HWMON/pwm${CFAN_BIOS_FAN}_auto_point${i}_pwm
+	done
+}
+
+
+#################################
+# Parse arguments
+#
+parse_arguments(){
+
+	# -E  allows options even after arguments
+	# -D  remove options from parameter list
+	# -A  put options into "hash" array, option
+	#     as key and option argument as value
+	#
+	# +   option can be given multiple times
+	# :   argument to option is mandatory
+	# ::  argument to option is optional
+	#
+	# :-  arguments are added to same array element as option.
+	#     following argument list:
+	#
+	#        -a one -a "" -a "two three"
+	#
+	#     would produced following array:
+	#
+	#        a[1] = "-aone"
+	#        a[2] = "-a"
+	#        a[3] = "-atwo three"
+	#
+	#     If "-" is not given, option and its argument are put
+	#     into array as separate items, thus above example
+	#     would produce following array:
+	#
+	#       a[1] = "-a"
+	#       a[2] = "one"
+	#       a[3] = "-a"
+	#       a[4] = ""
+	#       a[5] = "-a"
+	#       a[6] = "two three"
+	#
+
+	###############################################################
+	# options
+	#  -q --quiet    - be silent
+	#
+
+	local commands=(status setup load enable disable)
+
+	zparseopts \
+		-E -D -A ARGS \
+		q \
+		-quiet
+
+	SCRIPT_QUIET=0
+
+	if [[ -z "$1" ]]; then
+		SCRIPT_COMMAND=help
+		SCRIPT_ARGS=()
+	else
+ 		local cmd=(${(M)commands:#${1}*})
+
+		[[ $#cmd -eq 0 ]] && SCRIPT_COMMAND="help"
+		[[ $#cmd -eq 1 ]] && SCRIPT_COMMAND="$cmd"
+		[[ $#cmd -gt 1 ]] && SCRIPT_COMMAND="help"
+
+		shift
+		SCRIPT_ARGS=("$@")
+	fi
+
+	[[ ${+ARGS[-q]}      -eq 1 ]]  && SCRIPT_QUIET=1
+	[[ ${+ARGS[--quiet]} -eq 1 ]]  && SCRIPT_QUIET=1
+}
+
+init_cfan
+parse_arguments $@
+exec_command $SCRIPT_COMMAND $SCRIPT_ARGS
