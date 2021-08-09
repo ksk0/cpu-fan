@@ -151,7 +151,7 @@ Rough representation of temp/speed curve is given below:
 ```
                 rpm                                                             
                                                                                 
-                / \\                                                            
+                / \                                                            
                  |                            P5                                
            rpm-5 |                            o                                 
                  |                           /                                  
