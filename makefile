@@ -16,16 +16,14 @@ zsh_complete  = complete.zsh
 bash_complete_dir = /etc/bash_completion.d
 zsh_complete_dir != \
 	which zsh >/dev/null && \
-	zsh -c "typeset -p 1 fpath" | \
-	sed -e 's/^ *//' | \
-	awk '/Completion.*\/Unix/{print}'
+	zsh -c 'echo $${(M)fpath:\#*Completion/Unix}'
 
 help:
 	@echo
 	@echo "syntax: make {install|uninstall}"
 	@echo
 
-install: .run_as_root .zsh_is_present .empty_echo .install_files
+install: .check_for_zsh .run_as_root .zsh_is_present .empty_echo .install_files
 	@systemctl daemon-reload
 	@echo
 
@@ -72,3 +70,12 @@ uninstall: .run_as_root .empty_echo .uninstall_files
 		echo "\e[0m"; \
 		exit 1; \
 	fi
+
+.check_for_zsh:
+	@if [ "${is_zsh}" = "" ]; then \
+		echo "\e[31m"; \
+		echo "ZSH shell is not installed on this system! Please install it."; \
+		echo "\e[0m"; \
+		exit 1; \
+	fi
+

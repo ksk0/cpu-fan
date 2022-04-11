@@ -1,6 +1,6 @@
 # What is cpu-fan?
 
-**cpu-fan** is script used to aid with setup of dynamic control of CPU FAN 
+**cpu-fan** is script used to aid with setup of dynamic control of CPU FAN
 speed, on motherboards using chip which in turn is controlled with
 **nct6775** kernel module. Following chips are supported (at the time
 of this writing):
@@ -44,7 +44,7 @@ This is done when **cpu-fan** is setup, and when system is booted up (using
 **zsh shell**
 <ul>
 
-**cpu-fan** is **zsh** script. If one is not present on the system installation 
+**cpu-fan** is **zsh** script. If one is not present on the system installation
 will fail.
 </ul>
 
@@ -82,7 +82,7 @@ files for **bash** and **zsh** will also be installed as part of installation
 process (if given shells are installed on system). If given shell is installed
 afterwards, repeat installation process to install missing autocompletion files.
 
-You can remove **cpu-fan** from system by running 
+You can remove **cpu-fan** from system by running
 ```
 sudo make uninstall
 ```
@@ -134,7 +134,7 @@ for your fan.
 **FAN** speed is defined with the curve, which in turn is defined with up to
 **7** points. Each point is given by **temperature** and corresponding
 **fan speed**. When CPU reaches given temperature, FAN will have
-specified speed. CPU **temperature** is given in **°C**, while **fan speed** 
+specified speed. CPU **temperature** is given in **°C**, while **fan speed**
 is given in percentage of **maximum** fan speed (0 - 100%).
 
 Subsequent data points should be set to higher **temperatures** and higher
@@ -142,34 +142,34 @@ Subsequent data points should be set to higher **temperatures** and higher
 last data point reflects critical temperature, in which the fans should run at
 **full speed** (100%). Always set last point to **100%**.
 
-If your cooler is big enough to obtain enough cooling at low CPU temperature 
-without spinning the fan, you can set speed of first point to **0%**, if 
+If your cooler is big enough to obtain enough cooling at low CPU temperature
+without spinning the fan, you can set speed of first point to **0%**, if
 your cooler is small and can't give enough passive cooling, set **non zero**
 fan speed even for your first point in curve.
 
 Rough representation of temp/speed curve is given below:
 ```
-                rpm                                                             
-                                                                                
-                / \                                                            
-                 |                            P5                                
-           rpm-5 |                            o                                 
-                 |                           /                                  
-                 |                          /                                   
-                 |                     P4  /                                    
-           rpm-4 |                        o                                     
-                 |                      /                                       
-                 |                P3  /                                         
-           rpm-3 |                  o                                           
-                 |                /                                             
-                 |         P2   /                                               
-           rpm-2 |            o                                                 
-                 |          /                                                   
-                 |  P1   /                                                      
-           rpm-1 |    o                                                         
-                 |                                                              
-                 +----------------------------------> Temp                      
-                      T1      T2    T3   T4   T5    
+     rpm
+
+     / \
+      |                            P5
+rpm-5 |                            o
+      |                           /
+      |                          /
+      |                     P4  /
+rpm-4 |                        o
+      |                      /
+      |                P3  /
+rpm-3 |                  o
+      |                /
+      |         P2   /
+rpm-2 |            o
+      |          /
+      |  P1   /
+rpm-1 |    o
+      |
+      +----------------------------------> Temp
+           T1      T2    T3   T4   T5
 ```
 
 </ul>
