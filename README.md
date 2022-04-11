@@ -21,7 +21,7 @@ Nuvoton NCT6795D
 </ul>
 
 **cpu-fan** only supports mode **5** (***Smart Fan IV mode***). In that
-mode, speed of fan is dependent of CPU temperature, and relation
+mode, speed of fan is dependent on CPU temperature, and relation
 between fan speed and CPU temperature is defined with curve, which
 in turn is defined by slopes between up to **7** points (depending on
 the chip type). If your motherboard does not use **cnt6775** kernel  module
@@ -32,12 +32,10 @@ of no use to you.
 
 
 # How it works?
-The fan itself is controlled with **nct6775** kernel model, and not by
-**cpu-fan** script. The role of **cpu-fan** script is to set kernel module
-parameters, which in turn will enforce CPU FAN control.
-This is done when **cpu-fan** is setup, and when system is booted up (using
-**systemd** service).
-
+The fan itself is controlled by motherboard. The role of **cpu-fan** script
+is to configure chip on motherboard, via **nct6775** kernel module. 
+Motherboard itself  will enforce CPU FAN control. This is done when
+**cpu-fan** is setup, and when system is booted up (using **systemd** service).
 
 # Prerequisites
 
